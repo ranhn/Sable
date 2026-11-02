@@ -55,6 +55,11 @@ cd web && npm ci && npm run build && npx next start -p 8080
 export ARTEX_PG_DSN='postgres://user@127.0.0.1:5433/sable?sslmode=disable'
 ```
 
+## 文档
+
+- [架构说明](docs/architecture.md) —— 进程拓扑、Agent 循环、证据与截图链路
+- [部署说明](docs/deployment.md) —— 环境要求、systemd 单元、反代配置、排障
+
 ## 目录结构
 
 ```
