@@ -1,0 +1,552 @@
+"use client";
+
+import { translate as swt } from "@/i18n/runtime";
+import { useI18n } from "@/i18n";
+import * as React from "react";
+
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+
+import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, ClockIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { toast } from "sonner";
+
+import { StatusBadge } from "@/components/status-badge";
+import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
+import { SidebarTrigger } from "@/components/ui/sidebar";
+import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { api } from "@/lib/api";
+import { useTaskNumber } from "@/components/task-ref";
+import type { LLMProfile, Task } from "@/lib/types";
+
+import { AssetsTab } from "./_tabs/assets-tab";
+import { BroadcastTab } from "./_tabs/broadcast-tab";
+import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
+import { FindingsTab } from "./_tabs/findings-tab";
+import { GraphTab } from "./_tabs/graph-tab";
+import { InterceptTab } from "./_tabs/intercept-tab";
+import { OverviewTab } from "./_tabs/overview-tab";
+import { ReportTab } from "./_tabs/report-tab";
+import { RetestsTab } from "./_tabs/retests-tab";
+import { SessionsTab } from "./_tabs/sessions-tab";
+
+const TABS = [
+  { value: "sessions", get label() { return swt("interface.m0779"); } },
+  { value: "overview", get label() { return swt("interface.m0147"); } },
+  { value: "graph", get label() { return swt("interface.m0780"); } },
+  { value: "broadcast", get label() { return swt("interface.m0781"); } },
+  { value: "findings", get label() { return swt("interface.m0188"); } },
+  { value: "retests", get label() { return swt("interface.m0332"); } },
+  { value: "assets", get label() { return swt("interface.m0510"); } },
+  { value: "coverage", get label() { return swt("interface.m0782"); } },
+  { value: "intercept", get label() { return swt("interface.m0783"); } },
+  { value: "report", get label() { return swt("interface.m0784"); } },
+];
+
+function taskProfileIDs(task: Task): string[] {
+  if (task.llm_profile_ids && task.llm_profile_ids.length > 0) {
+    return task.llm_profile_ids.map(String);
+  }
+  return task.llm_profile_id ? [String(task.llm_profile_id)] : [];
+}
+
+// TaskTimeoutControl edits the task-level wall-clock budget. 0 means "no limit",
+// which is a legitimate choice for an open-ended engagement. The server recomputes
+// the absolute deadline from first_run_at and pushes it into the running engine, so
+// the change takes effect without a restart.
+function TaskTimeoutControl({ task, onUpdated }: { task: Task; onUpdated: () => void }) {
+  "use no memo";
+  const { t: swt } = useI18n();
+
+  const current = task.timeout_seconds ?? 0;
+  const [open, setOpen] = React.useState(false);
+  const [hours, setHours] = React.useState("0");
+  const [saving, setSaving] = React.useState(false);
+
+  const label = current > 0 ? `${Number((current / 3600).toFixed(1))}h` : "∞";
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) setHours(current > 0 ? String(Number((current / 3600).toFixed(2))) : "0");
+  };
+
+  const save = async () => {
+    const parsed = Number(hours);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      toast.error("请输入 0 或更大的小时数（0 = 不限时）");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.updateTask(task.id, { timeout_seconds: Math.round(parsed * 3600) });
+      toast.success(parsed > 0 ? `已设为 ${parsed} 小时` : "已取消时长限制（不限时）");
+      setOpen(false);
+      onUpdated();
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <Button size="sm" variant="outline" title="任务时长：0 = 不限时">
+          <ClockIcon />
+          {label}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64 space-y-3">
+        <PopoverHeader>
+          <PopoverTitle>任务时长</PopoverTitle>
+          <PopoverDescription>到点后任务会进入收尾并结束。填 0 表示不限时，保存后立即生效，不用重启。</PopoverDescription>
+        </PopoverHeader>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            step="0.5"
+            value={hours}
+            onChange={(event) => setHours(event.target.value)}
+            className="h-8 w-full rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <span className="shrink-0 text-xs text-muted-foreground">小时</span>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+            {swt("interface.m0063")}
+          </Button>
+          <Button size="sm" onClick={() => void save()} disabled={saving}>
+            {saving ? <Spinner /> : null}
+            {swt("interface.m0273")}
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: LLMProfile[]; onUpdated: () => void }) {
+  "use no memo";
+  const { t: swt, locale: swLocale } = useI18n();
+
+  const [open, setOpen] = React.useState(false);
+  const [profileIDs, setProfileIDs] = React.useState<string[]>(() => taskProfileIDs(task));
+  const [activeProfileID, setActiveProfileID] = React.useState(
+    task.active_llm_profile_id ? String(task.active_llm_profile_id) : (taskProfileIDs(task)[0] ?? ""),
+  );
+  const [saving, setSaving] = React.useState(false);
+  const popoverContentRef = React.useRef<HTMLDivElement>(null);
+
+  const chain = taskProfileIDs(task);
+  const exhausted = task.llm_failover_state === "chain_exhausted";
+  // Profile chains can change in any state, including final states. Main-Agent conversations still use them
+  // after completion, so failed models must remain replaceable for continued interaction.
+  const terminal = ["done", "failed", "timeout"].includes(task.status);
+  // A null active profile on an exhausted, non-empty chain is a persisted end
+  // cursor. Keep the status display honest; choosing the first profile is only
+  // the editor's reset draft and does not mean it is currently active.
+  let activeID = chain[0] ?? "";
+  if (exhausted) activeID = "";
+  if (task.active_llm_profile_id) activeID = String(task.active_llm_profile_id);
+  const activeProfile = profiles.find((profile) => profile.id === activeID);
+  const currentLabel = exhausted
+    ? swt("interface.m0785")
+    : (activeProfile?.name ?? (activeID ? swt("interface.m0786", { p0: activeID }) : swt("interface.m0787")));
+  const activeIndex = chain.indexOf(activeID);
+  const backupCount = activeIndex >= 0 ? Math.max(0, chain.length - activeIndex - 1) : 0;
+  const currentTitle = [currentLabel, activeProfile?.model, backupCount > 0 ? swt("interface.m0788", { p0: backupCount }) : ""]
+    .filter(Boolean)
+    .join(" · ");
+  let editorDescription = swt("interface.m0789");
+  if (terminal) editorDescription = swt("interface.m0790");
+  let saveLabel = swt("interface.m0273");
+  if (exhausted) saveLabel = swt("interface.m0791");
+  if (saving) saveLabel = swt("interface.m0792");
+
+  const syncDraft = React.useCallback(() => {
+    const next = taskProfileIDs(task);
+    setProfileIDs(next);
+    setActiveProfileID(task.active_llm_profile_id ? String(task.active_llm_profile_id) : (next[0] ?? ""));
+  }, [task]);
+
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next);
+    if (next) syncDraft();
+  };
+
+  const handleProfileIDsChange = (next: string[]) => {
+    setProfileIDs(next);
+    setActiveProfileID((current) => (next.includes(current) ? current : (next[0] ?? "")));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const result = await api.updateTaskLLMProfiles(
+        task.id,
+        profileIDs.map(Number),
+        activeProfileID ? Number(activeProfileID) : undefined,
+      );
+      if (result.switch_event) {
+        toast.info(result.switch_event.summary, { id: `task-${task.id}-llm-${result.switch_event.seq}` });
+      } else {
+        toast.success(
+          result.reopened_intents > 0
+            ? swt("interface.m0793", { p0: result.reopened_intents })
+            : swt("interface.m0794"),
+        );
+      }
+      setOpen(false);
+      onUpdated();
+    } catch (error) {
+      toast.error(swt("interface.m0352") + (error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <Button
+          size="sm"
+          variant={exhausted ? "destructive" : "outline"}
+          aria-label={swt("interface.m0795")}
+          title={currentTitle}
+        >
+          <BrainIcon data-icon="inline-start" />
+          <span className="hidden max-w-36 truncate lg:inline">{currentLabel}</span>
+          {backupCount > 0 && <span className="hidden text-muted-foreground xl:inline">+{backupCount}</span>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent ref={popoverContentRef} align="start" className="w-[min(28rem,calc(100vw-2rem))] gap-4 p-4">
+        <PopoverHeader>
+          <PopoverTitle>{swt("interface.m0796")}</PopoverTitle>
+          <PopoverDescription>{editorDescription}</PopoverDescription>
+        </PopoverHeader>
+
+        {exhausted && (
+          <Alert variant="destructive">
+            <CircleAlertIcon />
+            <AlertTitle>{swt("interface.m0797")}</AlertTitle>
+            <AlertDescription>
+              {task.llm_failover_reason ?? swt("interface.m0798")}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <TaskLLMProfileChain
+          profiles={profiles}
+          value={profileIDs}
+          onValueChange={handleProfileIDsChange}
+          activeProfileId={activeProfileID}
+          onActiveProfileChange={setActiveProfileID}
+          inputId="task-llm-profiles"
+          disabled={saving}
+          portalContainer={popoverContentRef}
+        />
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+            {swt("interface.m0211")}</Button>
+          <Button type="button" size="sm" onClick={save} disabled={saving}>
+            {saving && <Spinner data-icon="inline-start" />}
+            {saveLabel}
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function TaskDetailInner() {
+  "use no memo";
+  const { t: swt, locale: swLocale } = useI18n();
+
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const id = searchParams.get("id") ?? "";
+  const [task, setTask] = React.useState<Task | null>(null);
+  const [paused, setPaused] = React.useState(false);
+  const [loaded, setLoaded] = React.useState(false);
+  const [tab, setTab] = React.useState("sessions");
+  const [interceptPendingCount, setInterceptPendingCount] = React.useState(0);
+  const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
+  const [archiving, setArchiving] = React.useState(false);
+  // Numbering is a hook, so it must run before the loading early-returns below:
+  // a hook after a conditional return changes the hook count between renders and
+  // React drops the whole page into the error boundary.
+  const taskNumber = useTaskNumber(task?.id);
+
+  React.useEffect(() => {
+    api
+      .llmProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
+  }, []);
+
+  React.useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api
+        .interceptTask(id)
+        .then((rows) => {
+          if (alive) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+        })
+        .catch(() => {
+          // Polling is best-effort; the next interval retries automatically.
+        });
+    void load();
+    const t = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [id]);
+
+  const taskLoadInFlight = React.useRef<string | null>(null);
+  const load = React.useCallback(() => {
+    if (taskLoadInFlight.current === id) return;
+    taskLoadInFlight.current = id;
+    Promise.all([api.task(id), api.stats(id).catch(() => null)])
+      .then(([task, s]) => {
+        if (taskLoadInFlight.current !== id) return;
+        const base = { ...task };
+        const at = s?.active_task;
+        if (at) {
+          base.in_flight = at.in_flight;
+          base.goals_total = at.goals_total;
+          base.goals_met = at.goals_met;
+          base.engine_mode = s?.engine_mode ?? at.engine_mode;
+          base.paused = at.paused;
+        }
+        setTask(base);
+        setPaused(at?.paused ?? base.paused ?? false);
+      })
+      .catch(() => {
+        // Keep the last rendered task state during a transient poll failure.
+      })
+      .finally(() => {
+        if (taskLoadInFlight.current === id) {
+          taskLoadInFlight.current = null;
+          setLoaded(true);
+        }
+      });
+  }, [id]);
+  React.useEffect(() => {
+    load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  async function togglePause() {
+    if (task && ["done", "failed", "timeout"].includes(task.status)) return;
+    const next = !paused;
+    try {
+      await api.controlTask(id, next ? "pause" : "resume");
+      setPaused(next);
+      toast.success(next ? swt("interface.m0799") : swt("interface.m0800"));
+    } catch (e) {
+      toast.error(swt("interface.m0801") + (e as Error).message);
+    }
+  }
+
+  async function archiveTask() {
+    if (!task || archiving) return;
+    setArchiving(true);
+    try {
+      await api.archiveTask(task.id);
+      toast.success(swt("interface.m0802"));
+      router.push("/function/tasks");
+    } catch (error) {
+      toast.error(swt("interface.m0803", { p0: (error as Error).message }));
+      setArchiving(false);
+    }
+  }
+
+  if (!task) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
+        <p className="text-muted-foreground">{loaded ? swt("interface.m0804", { p0: id }) : swt("interface.m0260")}</p>
+        {loaded && (
+          <Button asChild variant="outline">
+            <Link href="/function/tasks">
+              <ArrowLeftIcon /> {swt("interface.m0805")}</Link>
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  const completed = task.status === "done";
+  const terminal = ["done", "failed", "timeout"].includes(task.status);
+  const archiveLifecycleEligible = terminal || paused || task.status === "paused";
+  const canArchive = archiveLifecycleEligible && !task.archive_blocked_by_task_id;
+  let archiveDisabledReason = task.queued ? swt("interface.m0806") : swt("interface.m0807");
+  if (archiveLifecycleEligible && task.archive_blocked_by_task_id) {
+    archiveDisabledReason = swt("interface.m0808", { p0: task.archive_blocked_by_task_id });
+  }
+  const engineMode = paused ? "paused" : (task.engine_mode ?? "idle");
+  let controlVariant: "default" | "secondary" | "outline" = "outline";
+  let controlIcon = <PauseIcon data-icon="inline-start" />;
+  let controlLabel = swt("interface.m0151");
+  if (terminal) {
+    controlVariant = "secondary";
+    controlIcon = <CheckIcon data-icon="inline-start" />;
+    controlLabel = completed ? swt("interface.m0809") : swt("interface.m0810");
+  } else if (paused) {
+    controlVariant = "default";
+    controlIcon = <PlayIcon data-icon="inline-start" />;
+    controlLabel = swt("interface.m0811");
+  }
+  const archiveTrigger = (
+    <Button
+      size="icon-sm"
+      variant="ghost"
+      disabled={!canArchive || archiving}
+      aria-label={canArchive ? swt("interface.m0812") : archiveDisabledReason}
+    >
+      {archiving ? <Spinner /> : <ArchiveIcon />}
+    </Button>
+  );
+
+  return (
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
+      {/* Top fixed area */}
+      <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
+        <div className="flex items-center gap-2">
+          <SidebarTrigger className="-ml-1" />
+          <Button asChild variant="ghost" size="icon" className="size-7">
+            <Link href="/function/tasks">
+              <ArrowLeftIcon />
+            </Link>
+          </Button>
+          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold" title={task.name || task.description}>
+            {task.name || task.description}
+          </h1>
+          <code className="hidden rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground sm:inline" title={`#${task.id}`}>
+            {taskNumber ?? task.id}
+          </code>
+          <Separator orientation="vertical" className="mx-1 hidden h-4 sm:block" />
+          <TaskLLMControl task={task} profiles={profiles} onUpdated={load} />
+          <TaskTimeoutControl task={task} onUpdated={load} />
+          <StatusBadge domain={terminal ? "task" : "engine"} value={terminal ? task.status : engineMode} dot />
+          {canArchive ? (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>{archiveTrigger}</AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{swt("interface.m0813")}{task.id}？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {swt("interface.m0814")}</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{swt("interface.m0063")}</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => void archiveTask()}>{swt("interface.m0815")}</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">{archiveTrigger}</span>
+              </TooltipTrigger>
+              <TooltipContent>{archiveDisabledReason}</TooltipContent>
+            </Tooltip>
+          )}
+          <Button size="sm" variant={controlVariant} onClick={togglePause} disabled={terminal}>
+            {controlIcon}
+            {controlLabel}
+          </Button>
+        </div>
+        <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
+        {/* Tabs */}
+        <div className="no-scrollbar min-w-0 overflow-x-auto">
+          <TabsList variant="default" className="min-w-max">
+            {TABS.map((t) => (
+              <TabsTrigger key={t.value} value={t.value}>
+                {t.label}
+                {t.value === "intercept" && interceptPendingCount > 0 && (
+                  <span className="ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold leading-none text-white">
+                    {interceptPendingCount > 99 ? "99+" : interceptPendingCount}
+                  </span>
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+      </header>
+
+      {/* Tab content */}
+      <div className="flex-1 p-4 lg:p-6">
+        <TabsContent value="sessions" className="mt-0">
+          <SessionsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="overview" className="mt-0">
+          <OverviewTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="graph" className="mt-0">
+          <GraphTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="broadcast" className="mt-0">
+          <BroadcastTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="findings" className="mt-0">
+          <FindingsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="retests" className="mt-0">
+          <RetestsTab key={id} taskId={id} />
+        </TabsContent>
+        <TabsContent value="assets" className="mt-0">
+          <AssetsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="coverage" className="mt-0">
+          <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />
+        </TabsContent>
+        <TabsContent value="intercept" className="mt-0">
+          <InterceptTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="report" className="mt-0">
+          <ReportTab taskId={id} />
+        </TabsContent>
+      </div>
+    </Tabs>
+  );
+}
+
+// useSearchParams must sit under a Suspense boundary for static export.
+export default function TaskDetailPage() {
+  "use no memo";
+  const { t: swt, locale: swLocale } = useI18n();
+
+  return (
+    <React.Suspense fallback={null}>
+      <TaskDetailInner />
+    </React.Suspense>
+  );
+}

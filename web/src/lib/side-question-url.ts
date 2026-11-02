@@ -1,0 +1,1 @@
+export function sideQuestionURL(parent:string,before?:number){const [path,query]=parent.split("?",2);const params=new URLSearchParams(query);if(before!==undefined)params.set("before",String(before));const suffix=params.toString();return `${path}/side-questions${suffix?`?${suffix}`:""}`}
