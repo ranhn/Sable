@@ -180,6 +180,12 @@ func (s *Store) prepare(ctx context.Context, refs []db.TrafficRef) ([]db.Prepare
 }
 
 func (s *Store) Record(ctx context.Context, in db.RecordFindingInput, refs []db.TrafficRef) (out *db.RecordedFinding, err error) {
+	// The agent treats traffic binding as optional, so most findings arrive with no
+	// refs and the capture log is never referenced. Fill them in from the finding's
+	// hosts before the transaction opens.
+	if len(refs) == 0 {
+		refs = s.autoBind(ctx, in)
+	}
 	err = s.DB.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		if err := db.LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 			return err

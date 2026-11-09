@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -343,6 +344,19 @@ export default function TrafficPage() {
   const exchanges = React.useMemo(() => traffic?.exchanges ?? [], [swLocale, traffic]);
   const total = traffic?.total ?? exchanges.length;
   const pageCount = Math.max(1, Math.ceil(total / size));
+  // The status chip is where an operator notices the log is filling the disk, so the
+  // switch lives next to it. Server state changes, then the page reloads: the traffic
+  // query lives inside an effect and cannot be poked from here.
+  const toggleCapture = React.useCallback(async (next: boolean) => {
+    try {
+      await api.setSettings({ traffic_capture: next });
+      toast.success(next ? "已开启流量录制" : "已关闭流量录制，后续请求不再记录");
+      setTimeout(() => window.location.reload(), 600);
+    } catch {
+      toast.error("切换录制状态失败");
+    }
+  }, []);
+
   const rangeStart = total === 0 ? 0 : page * size + 1;
   const rangeEnd = page * size + exchanges.length;
 
@@ -365,6 +379,14 @@ export default function TrafficPage() {
             <RadioTowerIcon className="size-3.5" />
             {traffic?.enabled ? swt("interface.m0161") : swt("interface.m1069")}
           </span>
+          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+            <Switch
+              checked={!!traffic?.enabled}
+              onCheckedChange={(v) => void toggleCapture(v === true)}
+              aria-label="切换流量录制"
+            />
+            录制
+          </label>
           {traffic?.proxy && <span className="font-mono text-xs text-muted-foreground">{traffic.proxy}</span>}
           <span className="text-xs text-muted-foreground">
             {swt("interface.m0199")}<span className="tabular-nums">{traffic?.count ?? 0}</span> {swt("interface.m0328")}</span>

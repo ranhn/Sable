@@ -271,6 +271,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	s.shotQueue = make(chan shotJob, 32)
 	go s.shotQueueLoop()
 	go s.shotScannerLoop()
+	go s.reportBackfillLoop()
 	s.restoreTaskRuntimes()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()

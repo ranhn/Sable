@@ -324,6 +324,9 @@ func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
 func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
+	if !strings.Contains(body, "不要绕过抓包代理") {
+		body += workerProxyRule
+	}
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
@@ -594,3 +597,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
 	return reason, tsx.Writes(), err
 }
+
+const workerProxyRule = "\n\n" +
+	"- **不要绕过抓包代理**：HTTP_PROXY / HTTPS_PROXY 指向本机录制器，报告证据、流量绑定、截图都依赖它。\n" +
+	"  禁止使用 --noproxy、unset HTTP_PROXY、curl -x 空值 等方式绕过。\n" +
+	"  Python 的 requests 默认读取环境变量；若代码里显式写了 proxies={}，改成从 os.environ 读取。\n" +
+	"  确实必须直连时（OAST 回连、非 HTTP 协议），在报告里写明「以下请求未经过代理」。\n"

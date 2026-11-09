@@ -21,11 +21,13 @@ import (
 const (
 	trafficPruneInterval = 10 * time.Minute
 	trafficPruneGrace    = 15 * time.Minute
+	// A retest re-runs the PoC and produces exactly the exchanges that should end up
+	// bound to the finding. Pruning during that window deletes the evidence before
+	// anything can reference it, so a task with recent retest activity is skipped.
+	trafficPruneRetestHold = 6 * time.Hour
 )
 
 func (s *Server) trafficPruneLoop() {
-	// Once at boot so a restart cleans up whatever the previous process left behind.
-	s.pruneFinishedTaskTraffic()
 	ticker := time.NewTicker(trafficPruneInterval)
 	defer ticker.Stop()
 	for {
@@ -59,8 +61,12 @@ func (s *Server) pruneFinishedTaskTraffic() {
 		  AND NOT EXISTS (SELECT 1 FROM finding_traffic_bindings b
 		                  JOIN findings f ON f.id = b.finding_id
 		                  WHERE f.task_id = t.id)
+		  AND NOT EXISTS (SELECT 1 FROM finding_retests r
+		                  JOIN findings f2 ON f2.id = r.finding_id
+		                  WHERE f2.task_id = t.id
+		                    AND r.created_at > now() - $2::interval)
 		ORDER BY t.completed_at ASC
-		LIMIT 5`, trafficPruneGrace.String())
+		LIMIT 5`, trafficPruneGrace.String(), trafficPruneRetestHold.String())
 	if err != nil {
 		log.Printf("[traffic-prune] list tasks: %v", err)
 		return

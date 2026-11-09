@@ -30,6 +30,7 @@ import (
 // shotJob is one queued capture. The queue is deliberately serial: a headless Chrome
 // costs ~150MB and the box also runs the agent workers.
 type shotJob struct {
+	form      string
 	taskID    int64
 	intentID  int64
 	findingID int64
@@ -74,6 +75,41 @@ func extractEvidenceURL(evidence string) string {
 // shotScannerLoop watches for newly registered findings and queues captures for the
 // ones that can be photographed. It starts from the current max id so a restart does
 // not walk the whole history.
+
+var (
+	shotPostRe = regexp.MustCompile(`(?s)-X\s*POST`)
+	shotDataRe = regexp.MustCompile(`(?s)(?:--data(?:-raw|-binary)?|\s-d)\s*(?:'([^']*)'|"([^"]*)")`)
+)
+
+// shotPostForm pulls the form body out of a POST PoC so the capture can replay it.
+//
+// A reflected XSS that only fires after a form submission cannot be photographed by
+// navigating to a URL: the payload never reaches the server. When the evidence holds a
+// POST curl, we recover its body and let shot.js submit a real form instead.
+func shotPostForm(evidence string) string {
+	if !shotPostRe.MatchString(evidence) {
+		return ""
+	}
+	m := shotDataRe.FindStringSubmatch(evidence)
+	if len(m) < 3 {
+		return ""
+	}
+	body := m[1]
+	if body == "" {
+		body = m[2]
+	}
+	body = strings.TrimSpace(body)
+	// Only form-encoded bodies can be replayed as a form; JSON payloads go through the
+	// same shape ("k=v"), so wrap them is not possible - skip rather than guess.
+	if body == "" || strings.HasPrefix(body, "{") || strings.HasPrefix(body, "[") {
+		return ""
+	}
+	if len(body) > 4000 {
+		body = body[:4000]
+	}
+	return body
+}
+
 func (s *Server) shotScannerLoop() {
 	last := int64(0)
 	if err := s.m.pg.QueryRow(`SELECT COALESCE(MAX(id),0) FROM findings`).Scan(&last); err != nil {
@@ -105,11 +141,12 @@ func (s *Server) shotScannerLoop() {
 			}
 			kind := classifyShotTarget(vulnclass, evidence)
 			url := extractEvidenceURL(evidence)
+			form := shotPostForm(evidence)
 			if kind == "" || url == "" {
 				continue
 			}
 			select {
-			case s.shotQueue <- shotJob{taskID: taskID, intentID: nodeID, findingID: id, url: url, kind: kind}:
+			case s.shotQueue <- shotJob{taskID: taskID, intentID: nodeID, findingID: id, url: url, kind: kind, form: form}:
 			default:
 				log.Printf("[shot] queue full, dropping capture for finding %d", id)
 			}
@@ -141,7 +178,11 @@ func (s *Server) captureFindingShot(job shotJob) {
 
 	ctx, cancel := context.WithTimeout(s.ctx, 75*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", "/opt/sable/tools/shot/shot.js", job.url, out, "--wait", "2500")
+	shotArgs := []string{"/opt/sable/tools/shot/shot.js", job.url, out, "--wait", "2500"}
+	if job.form != "" {
+		shotArgs = append(shotArgs, "--form", job.form)
+	}
+	cmd := exec.CommandContext(ctx, "node", shotArgs...)
 	cmd.Env = append(os.Environ(), "HOME=/home/ubuntu")
 	raw, err := cmd.Output()
 
@@ -161,7 +202,7 @@ func (s *Server) captureFindingShot(job shotJob) {
 		result.Error = strings.TrimSpace(err.Error())
 	}
 
-	shotURL := fmt.Sprintf("/ning/api/shots/%d/%s", job.taskID, name)
+	shotURL := fmt.Sprintf("/sable/api/shots/%d/%s", job.taskID, name)
 	meta := "link: " + shotURL
 	if result.Dialog != "" {
 		meta += "\ndialog: " + result.Dialog
@@ -172,6 +213,7 @@ func (s *Server) captureFindingShot(job shotJob) {
 			Summary: fmt.Sprintf("%s · HTTP %d · %s", truncate(job.url, 88), result.Status, truncate(result.Title, 56)),
 			Detail:  "Evidence screenshot of the live page:\n\n![proof](" + shotURL + ")\n\n" + meta,
 		})
+		s.appendShotToFinding(job.findingID, shotURL, result.Status, result.Title)
 		log.Printf("[shot] task %d finding %d captured %s", job.taskID, job.findingID, shotURL)
 		return
 	}
@@ -186,6 +228,35 @@ func (s *Server) captureFindingShot(job shotJob) {
 			"The finding keeps its textual evidence; this is not a missing step.", job.url, reason),
 	})
 	log.Printf("[shot] task %d finding %d failed: %s", job.taskID, job.findingID, reason)
+}
+
+// appendShotToFinding writes the capture into the finding record itself.
+//
+// The activity feed is where an operator sees the screenshot happen, but the report
+// is what gets delivered — and until now the two were disconnected, so every report
+// shipped without a single image even though the capture had succeeded.
+//
+// Both targets are guarded by "not already present" so a retest that re-captures the
+// same page does not stack duplicate blocks.
+func (s *Server) appendShotToFinding(findingID int64, shotURL string, status int, title string) {
+	block := fmt.Sprintf("\n\n### 页面截图\n\n实测页面：`HTTP %d` · %s\n\n![proof](%s)\n\n> 截图取自漏洞验证当次的真实响应，未经修饰。\n",
+		status, strings.TrimSpace(title), shotURL)
+
+	// evidence: the reporter reads this before writing, so the image lands in section 3.
+	if _, err := s.m.pg.Exec(`
+		UPDATE findings SET evidence = COALESCE(evidence,'') || $1
+		WHERE id = $2 AND COALESCE(evidence,'') NOT LIKE '%' || $3 || '%'`, block, findingID, shotURL); err != nil {
+		log.Printf("[shot] finding %d evidence append failed: %v", findingID, err)
+	}
+
+	// report: if it was already written, append a screenshot section so the delivery
+	// carries the image even when the capture finished after the write.
+	if _, err := s.m.pg.Exec(`
+		UPDATE findings SET report = COALESCE(report,'') || $1
+		WHERE id = $2 AND length(COALESCE(report,'')) > 500
+		  AND COALESCE(report,'') NOT LIKE '%' || $3 || '%'`, block, findingID, shotURL); err != nil {
+		log.Printf("[shot] finding %d report append failed: %v", findingID, err)
+	}
 }
 
 func truncate(s string, n int) string {

@@ -10,7 +10,7 @@ import (
 // serveShot serves a screenshot captured during a run.
 //
 // The worker takes them with `google-chrome --headless --screenshot=<dir>/<name>.png`
-// and pastes `![proof](/ning/api/shots/<task>/<name>.png)` into the step output, so the
+// and pastes `![proof](/sable/api/shots/<task>/<name>.png)` into the step output, so the
 // transcript can render the image right next to the command that produced it.
 //
 // Resolution is confined to <data>/shots: both sides are made absolute and the result
