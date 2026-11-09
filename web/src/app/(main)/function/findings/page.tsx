@@ -7,17 +7,7 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import {
-  ArrowUpRightIcon,
-  BugIcon,
-  ChevronRightIcon,
-  ClockIcon,
-  DownloadIcon,
-  InfoIcon,
-  SearchIcon,
-  ShieldAlertIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
+import { ArrowUpRightIcon, BugIcon, ChevronRightIcon, ClockIcon, DownloadIcon, InfoIcon, Loader2Icon, RotateCcwIcon, SearchIcon, ShieldAlertIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
@@ -254,6 +244,9 @@ export default function FindingsPage() {
 
   // Track export selections by independent finding_id and retain selections across pages.
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set());
+  // Batch retest calls the same per-finding endpoint as the row button, three at a time,
+  // so selecting 50 rows does not start 50 agent runs simultaneously.
+  const [batchRetesting, setBatchRetesting] = React.useState(false);
   // Export dialog: current/all/selected scope and single Markdown/ZIP Markdown/CSV/JSON format.
   const [exportOpen, setExportOpen] = React.useState(false);
   const [exportScope, setExportScope] = React.useState<"filtered" | "all" | "selected">("filtered");
@@ -958,6 +951,48 @@ export default function FindingsPage() {
           <div className="ml-auto flex items-center gap-3">
             {selectedIds.size > 0 && (
               <span className="text-xs text-muted-foreground tabular-nums">{swt("interface.m0398")}{" "}{selectedIds.size} {swt("interface.m0328")}</span>
+            )}
+            {selectedIds.size > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={batchRetesting}
+                onClick={() => {
+                  const ids = [...selectedIds];
+                  if (ids.length === 0) return;
+                  setBatchRetesting(true);
+                  void (async () => {
+                    const CONCURRENCY = 3;
+                    let ok = 0;
+                    let fail = 0;
+                    try {
+                      for (let i = 0; i < ids.length; i += CONCURRENCY) {
+                        const chunk = ids.slice(i, i + CONCURRENCY);
+                        const results = await Promise.allSettled(
+                          chunk.map((id) => api.startFindingRetest(id, "批量复测")),
+                        );
+                        for (const r of results) {
+                          if (r.status === "fulfilled") ok += 1;
+                          else fail += 1;
+                        }
+                      }
+                    } finally {
+                      setBatchRetesting(false);
+                      if (ok > 0) {
+                        toast.success(`已提交 ${ok} 个复测任务${fail > 0 ? `，${fail} 个失败` : ""}`);
+                        setSelectedIds(new Set());
+                        void loadFlat();
+                        if (view === "asset") void loadAssetTree();
+                      } else {
+                        toast.error(`批量复测失败：${fail} 个请求未成功`);
+                      }
+                    }
+                  })();
+                }}
+              >
+                {batchRetesting ? <Loader2Icon className="animate-spin" /> : <RotateCcwIcon />}
+                {batchRetesting ? "提交中…" : `批量复测 (${selectedIds.size})`}
+              </Button>
             )}
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> {swt("interface.m0399")}</Button>
