@@ -124,15 +124,12 @@ jobs:
           check tasks  http://127.0.0.1:8787/api/tasks
           check root   http://127.0.0.1:8787/
 
-      - name: Publish log to repo
+      - name: Publish log as artifact
         if: always()
-        run: |
-          mkdir -p ci-logs
-          cp artex.log ci-logs/last-run.log 2>/dev/null || echo "no log" > ci-logs/last-run.log
-          echo "--- meta ---" >> ci-logs/last-run.log
-          echo "run_id=$GITHUB_RUN_ID sha=$GITHUB_SHA" >> ci-logs/last-run.log
-          git config user.name "argus-ci"
-          git config user.email "ci@local"
-          git add ci-logs || true
-          git commit -m "ci: run log [skip ci]" || true
-          git push || true
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log
+          path: |
+            artex.log
+          retention-days: 7
+          if-no-files-found: ignore

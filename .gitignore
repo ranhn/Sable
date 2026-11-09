@@ -64,3 +64,4 @@ posture-runs/
 
 # benchmark runner output (one dir per run)
 benchmark-results/
+ci-logs/
